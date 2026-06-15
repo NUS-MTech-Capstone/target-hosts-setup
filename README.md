@@ -7,6 +7,12 @@ in a temporary directory, installs only the public key through EC2 key-pair
 metadata, uploads the raw OpenSSH private key to Secrets Manager, and deletes
 the temporary files. Re-running the script reuses the existing secret.
 
+Terraform apply is retried up to three times to recover from transient AWS API
+or DNS failures. Override `APPLY_MAX_ATTEMPTS` or
+`APPLY_RETRY_DELAY_SECONDS` when needed. Errors reading Secrets Manager are
+fatal unless AWS explicitly reports that the secret does not exist, preventing
+an accidental key replacement during an outage.
+
 ## Prerequisites
 
 - The main `aws-terraform` stack has been applied.
