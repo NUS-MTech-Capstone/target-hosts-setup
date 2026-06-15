@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+install -d -m 0755 /etc/ddm-ops
+cat >/etc/ddm-ops/config <<'EOF'
+SERVICE_NAME_B64=${service_name_b64}
+HEALTH_URL_B64=${health_url_b64}
+EOF
+chmod 0600 /etc/ddm-ops/config
+
+cat >/usr/local/sbin/ddm-ops <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+source /etc/ddm-ops/config
+SERVICE_NAME=$(printf '%s' "$SERVICE_NAME_B64" | base64 -d)
+HEALTH_URL=$(printf '%s' "$HEALTH_URL_B64" | base64 -d)
+operation=$${1:-}
+
+case "$operation" in
+  system_overview)
+    date --iso-8601=seconds
+    hostname
+    uname -a
+    uptime
+    ;;
+  disk_usage)
+    df -hP
+    ;;
+  memory_usage)
+    free -m
+    ;;
+  top_processes)
+    ps -eo pid,ppid,user,stat,%cpu,%mem,comm --sort=-%cpu
+    ;;
+  service_status)
+    systemctl --no-pager --full status "$SERVICE_NAME"
+    ;;
+  service_logs)
+    journalctl --no-pager -u "$SERVICE_NAME" -n 200 --since "-30 minutes"
+    ;;
+  health_check)
+    curl --fail --silent --show-error --max-time 10 "$HEALTH_URL"
+    ;;
+  restart_service)
+    systemctl restart "$SERVICE_NAME"
+    systemctl is-active "$SERVICE_NAME"
+    ;;
+  *)
+    echo "unsupported operation" >&2
+    exit 64
+    ;;
+esac
+EOF
+chown root:root /usr/local/sbin/ddm-ops
+chmod 0755 /usr/local/sbin/ddm-ops
+
+cat >/etc/sudoers.d/ddm-ops <<'EOF'
+ec2-user ALL=(root) NOPASSWD: /usr/local/sbin/ddm-ops *
+EOF
+chmod 0440 /etc/sudoers.d/ddm-ops
+visudo -cf /etc/sudoers.d/ddm-ops

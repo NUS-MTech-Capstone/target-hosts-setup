@@ -26,3 +26,14 @@ output "instance_id" {
   value = aws_instance.target.id
 }
 
+output "automation_service_name" {
+  value = var.automation_service_name
+}
+
+output "automation_health_url" {
+  value = var.automation_health_url
+}
+
+output "automation_helper_path" {
+  value = "/usr/local/sbin/ddm-ops"
+}

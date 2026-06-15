@@ -108,6 +108,11 @@ resource "aws_instance" "target" {
   key_name                    = aws_key_pair.target.key_name
   vpc_security_group_ids      = [aws_security_group.target.id]
   iam_instance_profile        = aws_iam_instance_profile.target.name
+  user_data = templatefile("${path.module}/templates/install-ddm-ops.sh.tftpl", {
+    service_name_b64 = base64encode(var.automation_service_name)
+    health_url_b64   = base64encode(var.automation_health_url)
+  })
+  user_data_replace_on_change = true
 
   metadata_options {
     http_endpoint = "enabled"

@@ -34,6 +34,19 @@ The instance is created in a private subnet with no public IP. Port 22 accepts
 traffic only from the EKS worker-node security group. Use AWS Systems Manager
 for administrative access.
 
+The instance also installs `/usr/local/sbin/ddm-ops`, a root-owned operation
+helper used by the incident workflow. Configure the managed systemd service and
+loopback health endpoint when applying:
+
+```bash
+./scripts/bootstrap.sh -auto-approve \
+  -var='automation_service_name=myapp' \
+  -var='automation_health_url=http://127.0.0.1:8080/healthz'
+```
+
+The SSH account has passwordless sudo access only to this helper. The helper
+rejects operations outside the fixed diagnostic catalog and `restart_service`.
+
 ## Destroy
 
 Destroying the stack also deletes the Secrets Manager secret immediately:
