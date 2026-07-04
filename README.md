@@ -2,6 +2,11 @@
 
 Terraform for private SSH targets used by DenDenMushi.
 
+This repository owns the Phase 1 test target and the host-side hooks used by
+Phase 2 incident automation. It creates the SSH target, stores the SSH private
+key in Secrets Manager, installs the bounded `ddm-ops` helper, and publishes
+CloudWatch alarm notifications for the Incident Agent.
+
 The private key is never passed to Terraform. `scripts/bootstrap.sh` creates it
 in a temporary directory, installs only the public key through EC2 key-pair
 metadata, uploads the raw OpenSSH private key to Secrets Manager, and deletes
@@ -52,6 +57,69 @@ loopback health endpoint when applying:
 
 The SSH account has passwordless sudo access only to this helper. The helper
 rejects operations outside the fixed diagnostic catalog and `restart_service`.
+
+## Observability
+
+Terraform creates CloudWatch Logs groups, CloudWatch alarms, an SNS topic, and
+an SQS queue for alarm delivery. The EC2 instance installs the CloudWatch Agent
+at boot and ships:
+
+- `/var/log/messages` and `/var/log/cloud-init-output.log` to the system log
+  group.
+- `/var/log/ddm-bootstrap.log` and `/var/log/ddm-ops.log` to the ops log group.
+- CPU, memory, disk, and swap metrics to the `DendenMushi/TargetHost`
+  namespace.
+
+The logs contain system and operation metadata only. Do not use this target
+setup to collect terminal streams or command contents.
+
+Default observability settings:
+
+```text
+CloudWatch log retention=14 days
+CPU alarm threshold=80 percent
+CPU alarm period=60 seconds
+CPU alarm evaluation periods=2
+SQS alarm event retention=345600 seconds
+DLQ enabled=true
+```
+
+Tune these with Terraform variables when applying:
+
+```bash
+./scripts/bootstrap.sh -auto-approve \
+  -var='cloudwatch_log_retention_days=7' \
+  -var='cpu_alarm_threshold_percent=75' \
+  -var='cpu_alarm_evaluation_periods=2' \
+  -var='cpu_alarm_datapoints_to_alarm=2'
+```
+
+Alarm state changes are published to the SNS topic and delivered to the SQS
+queue. The incident agent integration is intentionally outside this repository;
+use the `alarm_sqs_queue_url`, `alarm_sqs_queue_arn`, and
+`alarm_sns_topic_arn` outputs when wiring the consumer.
+
+## CPU Spike Demo
+
+The `ddm-ops` helper includes a bounded CPU spike operation for the alarm demo.
+Run it through SSM or an approved SSH session:
+
+```bash
+sudo /usr/local/sbin/ddm-ops cpu_spike 300 2
+```
+
+Arguments are `duration_seconds` and `worker_count`. The helper rejects values
+above `cpu_spike_max_duration_seconds` and `cpu_spike_max_workers`, which
+default to 300 seconds and 2 workers. Increase the duration only when the alarm
+period and evaluation settings require it.
+
+After the alarm enters `ALARM`, confirm the notification reached the queue:
+
+```bash
+aws sqs receive-message \
+  --region "${AWS_REGION:-ap-southeast-1}" \
+  --queue-url "$(terraform output -raw alarm_sqs_queue_url)"
+```
 
 ## Destroy
 

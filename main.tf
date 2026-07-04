@@ -13,8 +13,17 @@ data "aws_ssm_parameter" "amazon_linux_2023" {
 }
 
 locals {
-  name        = "dendenmushi-target-${var.host_id}-${var.environment}"
-  secret_name = "dendenmushi/targets/${var.host_id}/ssh-private-key"
+  name                  = "dendenmushi-target-${var.host_id}-${var.environment}"
+  secret_name           = "dendenmushi/targets/${var.host_id}/ssh-private-key"
+  system_log_group_name = "/dendenmushi/targets/${var.environment}/${var.host_id}/system"
+  ops_log_group_name    = "/dendenmushi/targets/${var.environment}/${var.host_id}/ops"
+  metrics_namespace     = "DendenMushi/TargetHost"
+
+  tags = {
+    Environment = var.environment
+    HostId      = var.host_id
+    Project     = "dendenmushi"
+  }
 }
 
 resource "aws_secretsmanager_secret" "ssh_private_key" {
@@ -22,22 +31,14 @@ resource "aws_secretsmanager_secret" "ssh_private_key" {
   description             = "SSH private key used by DenDenMushi to connect to ${var.host_id}"
   recovery_window_in_days = 0
 
-  tags = {
-    Environment = var.environment
-    HostId      = var.host_id
-    Project     = "dendenmushi"
-  }
+  tags = local.tags
 }
 
 resource "aws_key_pair" "target" {
   key_name   = local.name
   public_key = trimspace(var.target_public_key)
 
-  tags = {
-    Environment = var.environment
-    HostId      = var.host_id
-    Project     = "dendenmushi"
-  }
+  tags = local.tags
 }
 
 resource "aws_security_group" "target" {
@@ -83,11 +84,7 @@ resource "aws_iam_role" "target" {
     }]
   })
 
-  tags = {
-    Environment = var.environment
-    HostId      = var.host_id
-    Project     = "dendenmushi"
-  }
+  tags = local.tags
 }
 
 resource "aws_iam_role_policy_attachment" "ssm" {
@@ -95,9 +92,169 @@ resource "aws_iam_role_policy_attachment" "ssm" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
 }
 
+resource "aws_iam_role_policy" "cloudwatch_agent" {
+  name = "${local.name}-cloudwatch-agent"
+  role = aws_iam_role.target.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "WriteTargetLogs"
+        Effect = "Allow"
+        Action = [
+          "logs:CreateLogStream",
+          "logs:DescribeLogStreams",
+          "logs:PutLogEvents"
+        ]
+        Resource = [
+          "${aws_cloudwatch_log_group.system.arn}:*",
+          "${aws_cloudwatch_log_group.ops.arn}:*"
+        ]
+      },
+      {
+        Sid      = "PublishTargetMetrics"
+        Effect   = "Allow"
+        Action   = "cloudwatch:PutMetricData"
+        Resource = "*"
+        Condition = {
+          StringEquals = {
+            "cloudwatch:namespace" = local.metrics_namespace
+          }
+        }
+      },
+      {
+        Sid      = "ReadInstanceTagsForMetrics"
+        Effect   = "Allow"
+        Action   = "ec2:DescribeTags"
+        Resource = "*"
+      }
+    ]
+  })
+}
+
 resource "aws_iam_instance_profile" "target" {
   name = local.name
   role = aws_iam_role.target.name
+}
+
+resource "aws_cloudwatch_log_group" "system" {
+  name              = local.system_log_group_name
+  retention_in_days = var.cloudwatch_log_retention_days
+
+  tags = local.tags
+}
+
+resource "aws_cloudwatch_log_group" "ops" {
+  name              = local.ops_log_group_name
+  retention_in_days = var.cloudwatch_log_retention_days
+
+  tags = local.tags
+}
+
+resource "aws_sqs_queue" "alarm_dlq" {
+  count = var.alarm_queue_dlq_enabled ? 1 : 0
+
+  name                      = "${local.name}-alarm-dlq"
+  message_retention_seconds = var.alarm_queue_retention_seconds
+  sqs_managed_sse_enabled   = true
+
+  tags = local.tags
+}
+
+resource "aws_sqs_queue" "alarm_events" {
+  name                      = "${local.name}-alarm-events"
+  message_retention_seconds = var.alarm_queue_retention_seconds
+  sqs_managed_sse_enabled   = true
+
+  redrive_policy = var.alarm_queue_dlq_enabled ? jsonencode({
+    deadLetterTargetArn = aws_sqs_queue.alarm_dlq[0].arn
+    maxReceiveCount     = var.alarm_queue_max_receive_count
+  }) : null
+
+  tags = local.tags
+}
+
+resource "aws_sns_topic" "alarms" {
+  name = "${local.name}-alarms"
+
+  tags = local.tags
+}
+
+resource "aws_sns_topic_subscription" "alarm_events" {
+  topic_arn = aws_sns_topic.alarms.arn
+  protocol  = "sqs"
+  endpoint  = aws_sqs_queue.alarm_events.arn
+}
+
+resource "aws_sqs_queue_policy" "alarm_events" {
+  queue_url = aws_sqs_queue.alarm_events.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid    = "AllowCloudWatchAlarmTopic"
+      Effect = "Allow"
+      Principal = {
+        Service = "sns.amazonaws.com"
+      }
+      Action   = "sqs:SendMessage"
+      Resource = aws_sqs_queue.alarm_events.arn
+      Condition = {
+        ArnEquals = {
+          "aws:SourceArn" = aws_sns_topic.alarms.arn
+        }
+      }
+    }]
+  })
+}
+
+resource "aws_cloudwatch_metric_alarm" "high_cpu" {
+  count = var.observability_alarms_enabled ? 1 : 0
+
+  alarm_name          = "${local.name}-high-cpu"
+  alarm_description   = "CPU utilization is high on DenDenMushi target ${var.host_id}."
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  evaluation_periods  = var.cpu_alarm_evaluation_periods
+  datapoints_to_alarm = var.cpu_alarm_datapoints_to_alarm
+  metric_name         = "CPUUtilization"
+  namespace           = "AWS/EC2"
+  period              = var.cpu_alarm_period_seconds
+  statistic           = "Average"
+  threshold           = var.cpu_alarm_threshold_percent
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alarms.arn]
+  ok_actions          = [aws_sns_topic.alarms.arn]
+
+  dimensions = {
+    InstanceId = aws_instance.target.id
+  }
+
+  tags = local.tags
+}
+
+resource "aws_cloudwatch_metric_alarm" "status_check_failed" {
+  count = var.observability_alarms_enabled ? 1 : 0
+
+  alarm_name          = "${local.name}-status-check-failed"
+  alarm_description   = "EC2 status check failed on DenDenMushi target ${var.host_id}."
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  evaluation_periods  = 2
+  datapoints_to_alarm = 2
+  metric_name         = "StatusCheckFailed"
+  namespace           = "AWS/EC2"
+  period              = 60
+  statistic           = "Maximum"
+  threshold           = 1
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alarms.arn]
+  ok_actions          = [aws_sns_topic.alarms.arn]
+
+  dimensions = {
+    InstanceId = aws_instance.target.id
+  }
+
+  tags = local.tags
 }
 
 resource "aws_instance" "target" {
@@ -109,8 +266,16 @@ resource "aws_instance" "target" {
   vpc_security_group_ids      = [aws_security_group.target.id]
   iam_instance_profile        = aws_iam_instance_profile.target.name
   user_data = templatefile("${path.module}/templates/install-ddm-ops.sh.tftpl", {
-    service_name_b64 = base64encode(var.automation_service_name)
-    health_url_b64   = base64encode(var.automation_health_url)
+    service_name_b64               = base64encode(var.automation_service_name)
+    health_url_b64                 = base64encode(var.automation_health_url)
+    environment_b64                = base64encode(var.environment)
+    host_id_b64                    = base64encode(var.host_id)
+    aws_region_b64                 = base64encode(var.aws_region)
+    system_log_group_name_b64      = base64encode(aws_cloudwatch_log_group.system.name)
+    ops_log_group_name_b64         = base64encode(aws_cloudwatch_log_group.ops.name)
+    cloudwatch_metrics_namespace   = local.metrics_namespace
+    cpu_spike_max_duration_seconds = var.cpu_spike_max_duration_seconds
+    cpu_spike_max_workers          = var.cpu_spike_max_workers
   })
   user_data_replace_on_change = true
 

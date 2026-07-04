@@ -1,12 +1,145 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+exec > >(tee -a /var/log/ddm-bootstrap.log | logger -t ddm-bootstrap -s 2>/dev/console) 2>&1
+
 install -d -m 0755 /etc/ddm-ops
 cat >/etc/ddm-ops/config <<'EOF'
 SERVICE_NAME_B64=${service_name_b64}
 HEALTH_URL_B64=${health_url_b64}
+ENVIRONMENT_B64=${environment_b64}
+HOST_ID_B64=${host_id_b64}
+AWS_REGION_B64=${aws_region_b64}
+SYSTEM_LOG_GROUP_NAME_B64=${system_log_group_name_b64}
+OPS_LOG_GROUP_NAME_B64=${ops_log_group_name_b64}
+CPU_SPIKE_MAX_DURATION_SECONDS=${cpu_spike_max_duration_seconds}
+CPU_SPIKE_MAX_WORKERS=${cpu_spike_max_workers}
 EOF
 chmod 0600 /etc/ddm-ops/config
+
+dnf install -y amazon-cloudwatch-agent
+
+source /etc/ddm-ops/config
+ENVIRONMENT=$(printf '%s' "$ENVIRONMENT_B64" | base64 -d)
+HOST_ID=$(printf '%s' "$HOST_ID_B64" | base64 -d)
+AWS_REGION=$(printf '%s' "$AWS_REGION_B64" | base64 -d)
+SYSTEM_LOG_GROUP_NAME=$(printf '%s' "$SYSTEM_LOG_GROUP_NAME_B64" | base64 -d)
+OPS_LOG_GROUP_NAME=$(printf '%s' "$OPS_LOG_GROUP_NAME_B64" | base64 -d)
+
+touch /var/log/ddm-ops.log
+chown root:root /var/log/ddm-ops.log
+chmod 0640 /var/log/ddm-ops.log
+
+cat >/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json <<EOF
+{
+  "agent": {
+    "metrics_collection_interval": 60,
+    "region": "$${AWS_REGION}",
+    "run_as_user": "root"
+  },
+  "logs": {
+    "logs_collected": {
+      "files": {
+        "collect_list": [
+          {
+            "file_path": "/var/log/messages",
+            "log_group_name": "$${SYSTEM_LOG_GROUP_NAME}",
+            "log_stream_name": "{instance_id}/messages",
+            "timezone": "UTC"
+          },
+          {
+            "file_path": "/var/log/cloud-init-output.log",
+            "log_group_name": "$${SYSTEM_LOG_GROUP_NAME}",
+            "log_stream_name": "{instance_id}/cloud-init-output",
+            "timezone": "UTC"
+          },
+          {
+            "file_path": "/var/log/ddm-bootstrap.log",
+            "log_group_name": "$${OPS_LOG_GROUP_NAME}",
+            "log_stream_name": "{instance_id}/bootstrap",
+            "timezone": "UTC"
+          },
+          {
+            "file_path": "/var/log/ddm-ops.log",
+            "log_group_name": "$${OPS_LOG_GROUP_NAME}",
+            "log_stream_name": "{instance_id}/ops",
+            "timezone": "UTC"
+          }
+        ]
+      }
+    }
+  },
+  "metrics": {
+    "namespace": "${cloudwatch_metrics_namespace}",
+    "append_dimensions": {
+      "InstanceId": "\$${aws:InstanceId}",
+      "InstanceType": "\$${aws:InstanceType}"
+    },
+    "metrics_collected": {
+      "cpu": {
+        "append_dimensions": {
+          "Environment": "$${ENVIRONMENT}",
+          "HostId": "$${HOST_ID}",
+          "Project": "dendenmushi"
+        },
+        "measurement": [
+          "cpu_usage_idle",
+          "cpu_usage_iowait",
+          "cpu_usage_user",
+          "cpu_usage_system"
+        ],
+        "metrics_collection_interval": 60,
+        "resources": [
+          "*"
+        ],
+        "totalcpu": true
+      },
+      "disk": {
+        "append_dimensions": {
+          "Environment": "$${ENVIRONMENT}",
+          "HostId": "$${HOST_ID}",
+          "Project": "dendenmushi"
+        },
+        "measurement": [
+          "used_percent"
+        ],
+        "metrics_collection_interval": 60,
+        "resources": [
+          "/"
+        ]
+      },
+      "mem": {
+        "append_dimensions": {
+          "Environment": "$${ENVIRONMENT}",
+          "HostId": "$${HOST_ID}",
+          "Project": "dendenmushi"
+        },
+        "measurement": [
+          "mem_used_percent"
+        ],
+        "metrics_collection_interval": 60
+      },
+      "swap": {
+        "append_dimensions": {
+          "Environment": "$${ENVIRONMENT}",
+          "HostId": "$${HOST_ID}",
+          "Project": "dendenmushi"
+        },
+        "measurement": [
+          "swap_used_percent"
+        ],
+        "metrics_collection_interval": 60
+      }
+    }
+  }
+}
+EOF
+
+/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
+  -a fetch-config \
+  -m ec2 \
+  -s \
+  -c file:/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json
 
 cat >/usr/local/sbin/ddm-ops <<'EOF'
 #!/usr/bin/env bash
@@ -16,6 +149,59 @@ source /etc/ddm-ops/config
 SERVICE_NAME=$(printf '%s' "$SERVICE_NAME_B64" | base64 -d)
 HEALTH_URL=$(printf '%s' "$HEALTH_URL_B64" | base64 -d)
 operation=$${1:-}
+
+log_operation() {
+  printf '%s operation=%s user=%s\n' "$(date --iso-8601=seconds)" "$${operation:-unknown}" "$${SUDO_USER:-$${USER:-unknown}}" >>/var/log/ddm-ops.log
+}
+
+require_uint() {
+  local name=$${1}
+  local value=$${2}
+
+  if [[ ! "$${value}" =~ ^[0-9]+$ ]]; then
+    echo "$${name} must be an unsigned integer" >&2
+    exit 64
+  fi
+}
+
+cpu_spike() {
+  local duration=$${2:-$${CPU_SPIKE_MAX_DURATION_SECONDS}}
+  local workers=$${3:-$${CPU_SPIKE_MAX_WORKERS}}
+  local pids=()
+
+  require_uint duration "$${duration}"
+  require_uint workers "$${workers}"
+
+  if (( duration < 1 || duration > CPU_SPIKE_MAX_DURATION_SECONDS )); then
+    echo "duration must be between 1 and $${CPU_SPIKE_MAX_DURATION_SECONDS} seconds" >&2
+    exit 64
+  fi
+
+  if (( workers < 1 || workers > CPU_SPIKE_MAX_WORKERS )); then
+    echo "workers must be between 1 and $${CPU_SPIKE_MAX_WORKERS}" >&2
+    exit 64
+  fi
+
+  echo "starting bounded CPU spike: duration=$${duration}s workers=$${workers}"
+
+  for _ in $(seq 1 "$${workers}"); do
+    (
+      end=$((SECONDS + duration))
+      while (( SECONDS < end )); do
+        :
+      done
+    ) &
+    pids+=("$!")
+  done
+
+  trap 'kill "$${pids[@]}" 2>/dev/null || true' INT TERM EXIT
+  wait "$${pids[@]}"
+  trap - INT TERM EXIT
+
+  echo "bounded CPU spike complete"
+}
+
+log_operation
 
 case "$operation" in
   system_overview)
@@ -45,6 +231,9 @@ case "$operation" in
   restart_service)
     systemctl restart "$SERVICE_NAME"
     systemctl is-active "$SERVICE_NAME"
+    ;;
+  cpu_spike)
+    cpu_spike "$@"
     ;;
   *)
     echo "unsupported operation" >&2
