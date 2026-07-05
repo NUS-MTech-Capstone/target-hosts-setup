@@ -52,7 +52,8 @@ loopback health endpoint when applying:
 ```bash
 ./scripts/bootstrap.sh -auto-approve \
   -var='automation_service_name=myapp' \
-  -var='automation_health_url=http://127.0.0.1:8080/healthz'
+  -var='automation_health_url=http://127.0.0.1:8080/healthz' \
+  -var='incident_alerts_topic_arn=<aws-terraform incident_alerts_topic_arn>'
 ```
 
 The SSH account has passwordless sudo access only to this helper. The helper
@@ -94,10 +95,19 @@ Tune these with Terraform variables when applying:
   -var='cpu_alarm_datapoints_to_alarm=2'
 ```
 
-Alarm state changes are published to the SNS topic and delivered to the SQS
-queue. The incident agent integration is intentionally outside this repository;
-use the `alarm_sqs_queue_url`, `alarm_sqs_queue_arn`, and
-`alarm_sns_topic_arn` outputs when wiring the consumer.
+Alarm state changes are published to the target-host SNS topic and delivered to
+the target-host SQS queue. When `incident_alerts_topic_arn` is set, the same
+ALARM/OK transitions are also published to the central DenDenMushi Incident
+Agent topic.
+
+Alarm descriptions are JSON metadata consumed by the Incident Agent:
+
+```json
+{"source":"managed-server","hostId":"host-dev-1","runbookVersion":"v1","signal":"high_cpu"}
+```
+
+The local `alarm_sqs_queue_url`, `alarm_sqs_queue_arn`, and
+`alarm_sns_topic_arn` outputs remain available for standalone validation.
 
 ## CPU Spike Demo
 

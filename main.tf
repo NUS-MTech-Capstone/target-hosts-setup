@@ -18,6 +18,12 @@ locals {
   system_log_group_name = "/dendenmushi/targets/${var.environment}/${var.host_id}/system"
   ops_log_group_name    = "/dendenmushi/targets/${var.environment}/${var.host_id}/ops"
   metrics_namespace     = "DendenMushi/TargetHost"
+  alarm_action_arns     = var.incident_alerts_topic_arn == "" ? [aws_sns_topic.alarms.arn] : [aws_sns_topic.alarms.arn, var.incident_alerts_topic_arn]
+  alarm_description_base = {
+    source         = "managed-server"
+    hostId         = var.host_id
+    runbookVersion = "v1"
+  }
 
   tags = {
     Environment = var.environment
@@ -213,7 +219,7 @@ resource "aws_cloudwatch_metric_alarm" "high_cpu" {
   count = var.observability_alarms_enabled ? 1 : 0
 
   alarm_name          = "${local.name}-high-cpu"
-  alarm_description   = "CPU utilization is high on DenDenMushi target ${var.host_id}."
+  alarm_description   = jsonencode(merge(local.alarm_description_base, { signal = "high_cpu" }))
   comparison_operator = "GreaterThanOrEqualToThreshold"
   evaluation_periods  = var.cpu_alarm_evaluation_periods
   datapoints_to_alarm = var.cpu_alarm_datapoints_to_alarm
@@ -223,8 +229,8 @@ resource "aws_cloudwatch_metric_alarm" "high_cpu" {
   statistic           = "Average"
   threshold           = var.cpu_alarm_threshold_percent
   treat_missing_data  = "notBreaching"
-  alarm_actions       = [aws_sns_topic.alarms.arn]
-  ok_actions          = [aws_sns_topic.alarms.arn]
+  alarm_actions       = local.alarm_action_arns
+  ok_actions          = local.alarm_action_arns
 
   dimensions = {
     InstanceId = aws_instance.target.id
@@ -237,7 +243,7 @@ resource "aws_cloudwatch_metric_alarm" "status_check_failed" {
   count = var.observability_alarms_enabled ? 1 : 0
 
   alarm_name          = "${local.name}-status-check-failed"
-  alarm_description   = "EC2 status check failed on DenDenMushi target ${var.host_id}."
+  alarm_description   = jsonencode(merge(local.alarm_description_base, { signal = "status_check_failed" }))
   comparison_operator = "GreaterThanOrEqualToThreshold"
   evaluation_periods  = 2
   datapoints_to_alarm = 2
@@ -247,8 +253,8 @@ resource "aws_cloudwatch_metric_alarm" "status_check_failed" {
   statistic           = "Maximum"
   threshold           = 1
   treat_missing_data  = "notBreaching"
-  alarm_actions       = [aws_sns_topic.alarms.arn]
-  ok_actions          = [aws_sns_topic.alarms.arn]
+  alarm_actions       = local.alarm_action_arns
+  ok_actions          = local.alarm_action_arns
 
   dimensions = {
     InstanceId = aws_instance.target.id

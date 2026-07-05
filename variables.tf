@@ -71,6 +71,17 @@ variable "observability_alarms_enabled" {
   default     = true
 }
 
+variable "incident_alerts_topic_arn" {
+  description = "Optional central DenDenMushi Incident Agent SNS topic ARN for managed-server alarm notifications."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.incident_alerts_topic_arn == "" || can(regex("^arn:aws[a-zA-Z-]*:sns:", var.incident_alerts_topic_arn))
+    error_message = "incident_alerts_topic_arn must be empty or an SNS topic ARN."
+  }
+}
+
 variable "cpu_alarm_threshold_percent" {
   description = "CPU utilization percentage that triggers the target host high CPU alarm."
   type        = number
