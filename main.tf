@@ -18,6 +18,7 @@ locals {
   system_log_group_name = "/dendenmushi/targets/${var.environment}/${var.host_id}/system"
   ops_log_group_name    = "/dendenmushi/targets/${var.environment}/${var.host_id}/ops"
   metrics_namespace     = "DendenMushi/TargetHost"
+  demo_app_metric_name  = "${local.name}-demo-app-unhealthy"
   alarm_action_arns     = var.incident_alerts_topic_arn == "" ? [aws_sns_topic.alarms.arn] : [aws_sns_topic.alarms.arn, var.incident_alerts_topic_arn]
   alarm_description_base = {
     source         = "managed-server"
@@ -261,6 +262,43 @@ resource "aws_cloudwatch_metric_alarm" "status_check_failed" {
   }
 
   tags = local.tags
+}
+
+resource "aws_cloudwatch_log_metric_filter" "demo_app_unhealthy" {
+  count = var.observability_alarms_enabled ? 1 : 0
+
+  name           = local.demo_app_metric_name
+  log_group_name = aws_cloudwatch_log_group.ops.name
+  pattern        = "{ $.service = \"ddm-demo-app\" && $.status = \"unhealthy\" }"
+
+  metric_transformation {
+    name          = local.demo_app_metric_name
+    namespace     = local.metrics_namespace
+    value         = "1"
+    default_value = "0"
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "demo_app_unhealthy" {
+  count = var.observability_alarms_enabled ? 1 : 0
+
+  alarm_name          = local.demo_app_metric_name
+  alarm_description   = jsonencode(merge(local.alarm_description_base, { signal = "demo_app_unhealthy" }))
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  evaluation_periods  = 1
+  datapoints_to_alarm = 1
+  metric_name         = local.demo_app_metric_name
+  namespace           = local.metrics_namespace
+  period              = 60
+  statistic           = "Sum"
+  threshold           = 1
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = local.alarm_action_arns
+  ok_actions          = local.alarm_action_arns
+
+  tags = local.tags
+
+  depends_on = [aws_cloudwatch_log_metric_filter.demo_app_unhealthy]
 }
 
 resource "aws_instance" "target" {

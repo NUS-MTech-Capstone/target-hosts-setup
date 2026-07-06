@@ -35,7 +35,7 @@ variable "target_public_key" {
 variable "automation_service_name" {
   description = "Systemd service managed by the incident automation helper."
   type        = string
-  default     = "nginx"
+  default     = "ddm-demo-app"
 
   validation {
     condition     = can(regex("^[A-Za-z0-9_.@-]+$", var.automation_service_name))
@@ -46,7 +46,7 @@ variable "automation_service_name" {
 variable "automation_health_url" {
   description = "Loopback HTTP endpoint used to verify the managed service."
   type        = string
-  default     = "http://127.0.0.1/"
+  default     = "http://127.0.0.1:18080/healthz"
 
   validation {
     condition     = can(regex("^https?://(127\\.0\\.0\\.1|localhost)(:[0-9]+)?(/.*)?$", var.automation_health_url))

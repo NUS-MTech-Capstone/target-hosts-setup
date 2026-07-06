@@ -86,6 +86,22 @@ output "status_check_failed_alarm_arn" {
   value = try(aws_cloudwatch_metric_alarm.status_check_failed[0].arn, null)
 }
 
+output "demo_app_unhealthy_alarm_name" {
+  value = try(aws_cloudwatch_metric_alarm.demo_app_unhealthy[0].alarm_name, null)
+}
+
+output "demo_app_unhealthy_alarm_arn" {
+  value = try(aws_cloudwatch_metric_alarm.demo_app_unhealthy[0].arn, null)
+}
+
+output "demo_app_fail_command" {
+  value = "curl -fsS -XPOST http://127.0.0.1:18080/admin/fail"
+}
+
+output "demo_app_recover_command" {
+  value = "curl -fsS -XPOST http://127.0.0.1:18080/admin/recover"
+}
+
 output "cpu_spike_demo_command" {
   value = "sudo /usr/local/sbin/ddm-ops cpu_spike ${var.cpu_spike_max_duration_seconds} ${var.cpu_spike_max_workers}"
 }

@@ -17,7 +17,7 @@ CPU_SPIKE_MAX_WORKERS=${cpu_spike_max_workers}
 EOF
 chmod 0600 /etc/ddm-ops/config
 
-dnf install -y amazon-cloudwatch-agent
+dnf install -y amazon-cloudwatch-agent python3
 
 source /etc/ddm-ops/config
 ENVIRONMENT=$(printf '%s' "$ENVIRONMENT_B64" | base64 -d)
@@ -29,6 +29,151 @@ OPS_LOG_GROUP_NAME=$(printf '%s' "$OPS_LOG_GROUP_NAME_B64" | base64 -d)
 touch /var/log/ddm-ops.log
 chown root:root /var/log/ddm-ops.log
 chmod 0640 /var/log/ddm-ops.log
+
+touch /var/log/ddm-demo-health.log
+chown root:root /var/log/ddm-demo-health.log
+chmod 0640 /var/log/ddm-demo-health.log
+
+install -d -m 0755 /opt/ddm-demo-app
+useradd --system --home-dir /opt/ddm-demo-app --shell /sbin/nologin ddm-demo 2>/dev/null || true
+
+cat >/opt/ddm-demo-app/server.py <<'EOF'
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import logging
+
+healthy = True
+
+
+class Handler(BaseHTTPRequestHandler):
+    server_version = "ddm-demo-app/1.0"
+
+    def _send(self, status, body, content_type="text/plain"):
+        data = body.encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_GET(self):
+        if self.path == "/healthz":
+            if healthy:
+                self._send(200, "ok\n")
+            else:
+                self._send(503, "unhealthy\n")
+            return
+        self._send(404, "not found\n")
+
+    def do_POST(self):
+        global healthy
+        if self.path == "/admin/fail":
+            healthy = False
+            self._send(200, "failure mode enabled\n")
+            return
+        if self.path == "/admin/recover":
+            healthy = True
+            self._send(200, "recovered\n")
+            return
+        self._send(404, "not found\n")
+
+    def log_message(self, fmt, *args):
+        logging.info("%s - %s", self.address_string(), fmt % args)
+
+
+def main():
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    server = ThreadingHTTPServer(("127.0.0.1", 18080), Handler)
+    logging.info("ddm-demo-app listening on 127.0.0.1:18080")
+    server.serve_forever()
+
+
+if __name__ == "__main__":
+    main()
+EOF
+chown -R ddm-demo:ddm-demo /opt/ddm-demo-app
+chmod 0755 /opt/ddm-demo-app
+chmod 0644 /opt/ddm-demo-app/server.py
+
+cat >/etc/systemd/system/ddm-demo-app.service <<'EOF'
+[Unit]
+Description=DenDenMushi demo incident application
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ddm-demo
+Group=ddm-demo
+WorkingDirectory=/opt/ddm-demo-app
+ExecStart=/usr/bin/python3 /opt/ddm-demo-app/server.py
+Restart=always
+RestartSec=2
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+cat >/usr/local/sbin/ddm-demo-health-probe <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+url="http://127.0.0.1:18080/healthz"
+body_file=$(mktemp)
+error_file=$(mktemp)
+status="000"
+exit_code=0
+
+cleanup() {
+  rm -f "$${body_file}" "$${error_file}"
+}
+trap cleanup EXIT
+
+if status=$(curl --silent --show-error --max-time 5 --output "$${body_file}" --write-out "%%{http_code}" "$${url}" 2>"$${error_file}"); then
+  exit_code=0
+else
+  exit_code=$?
+  status="000"
+fi
+
+if [[ "$${status}" =~ ^2[0-9][0-9]$ ]]; then
+  health_status="healthy"
+else
+  health_status="unhealthy"
+fi
+
+printf '{"timestamp":"%s","service":"ddm-demo-app","status":"%s","httpStatus":"%s","exitCode":%d}\n' \
+  "$(date --iso-8601=seconds)" "$${health_status}" "$${status}" "$${exit_code}" >>/var/log/ddm-demo-health.log
+EOF
+chown root:root /usr/local/sbin/ddm-demo-health-probe
+chmod 0755 /usr/local/sbin/ddm-demo-health-probe
+
+cat >/etc/systemd/system/ddm-demo-health-probe.service <<'EOF'
+[Unit]
+Description=DenDenMushi demo app health probe
+After=ddm-demo-app.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/ddm-demo-health-probe
+EOF
+
+cat >/etc/systemd/system/ddm-demo-health-probe.timer <<'EOF'
+[Unit]
+Description=Run DenDenMushi demo app health probe every 30 seconds
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=30s
+AccuracySec=5s
+Unit=ddm-demo-health-probe.service
+
+[Install]
+WantedBy=timers.target
+EOF
 
 cat >/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json <<EOF
 {
@@ -63,6 +208,12 @@ cat >/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json <<EOF
             "file_path": "/var/log/ddm-ops.log",
             "log_group_name": "$${OPS_LOG_GROUP_NAME}",
             "log_stream_name": "{instance_id}/ops",
+            "timezone": "UTC"
+          },
+          {
+            "file_path": "/var/log/ddm-demo-health.log",
+            "log_group_name": "$${OPS_LOG_GROUP_NAME}",
+            "log_stream_name": "{instance_id}/demo-health",
             "timezone": "UTC"
           }
         ]
@@ -226,7 +377,27 @@ case "$operation" in
     journalctl --no-pager -u "$SERVICE_NAME" -n 200 --since "-30 minutes"
     ;;
   health_check)
-    curl --fail --silent --show-error --max-time 10 "$HEALTH_URL"
+    tmp_body=$(mktemp)
+    status="000"
+    exit_code=0
+
+    if status=$(curl --silent --show-error --max-time 10 --output "$tmp_body" --write-out "%%{http_code}" "$HEALTH_URL"); then
+      exit_code=0
+    else
+      exit_code=$?
+    fi
+
+    cat "$tmp_body"
+    rm -f "$tmp_body"
+
+    if (( exit_code != 0 )); then
+      exit "$exit_code"
+    fi
+
+    if [[ ! "$status" =~ ^2[0-9][0-9]$ ]]; then
+      echo "health_check failed: http_status=$status" >&2
+      exit 1
+    fi
     ;;
   restart_service)
     systemctl restart "$SERVICE_NAME"
@@ -249,3 +420,7 @@ ec2-user ALL=(root) NOPASSWD: /usr/local/sbin/ddm-ops *
 EOF
 chmod 0440 /etc/sudoers.d/ddm-ops
 visudo -cf /etc/sudoers.d/ddm-ops
+
+systemctl daemon-reload
+systemctl enable --now ddm-demo-app.service
+systemctl enable --now ddm-demo-health-probe.timer

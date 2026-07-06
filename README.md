@@ -4,8 +4,8 @@ Terraform for private SSH targets used by DenDenMushi.
 
 This repository owns the Phase 1 test target and the host-side hooks used by
 Phase 2 incident automation. It creates the SSH target, stores the SSH private
-key in Secrets Manager, installs the bounded `ddm-ops` helper, and publishes
-CloudWatch alarm notifications for the Incident Agent.
+key in Secrets Manager, installs the bounded `ddm-ops` helper and demo incident
+service, and publishes CloudWatch alarm notifications for the Incident Agent.
 
 The private key is never passed to Terraform. `scripts/bootstrap.sh` creates it
 in a temporary directory, installs only the public key through EC2 key-pair
@@ -39,15 +39,23 @@ AWS_REGION=ap-southeast-1
 HOST_ID=host-dev-1
 instance type=t3.micro
 SSH user=ec2-user
+automation service=ddm-demo-app
+automation health URL=http://127.0.0.1:18080/healthz
 ```
 
 The instance is created in a private subnet with no public IP. Port 22 accepts
 traffic only from the EKS worker-node security group. Use AWS Systems Manager
 for administrative access.
 
-The instance also installs `/usr/local/sbin/ddm-ops`, a root-owned operation
-helper used by the incident workflow. Configure the managed systemd service and
-loopback health endpoint when applying:
+The instance also installs:
+
+- `ddm-demo-app.service`, a loopback-only HTTP service for incident demos.
+- `ddm-demo-health-probe.timer`, which records bounded health status metadata.
+- `/usr/local/sbin/ddm-ops`, a root-owned operation helper used by the incident
+  workflow.
+
+Configure the managed systemd service and loopback health endpoint only when
+overriding the default demo app:
 
 ```bash
 ./scripts/bootstrap.sh -auto-approve \
@@ -59,6 +67,10 @@ loopback health endpoint when applying:
 The SSH account has passwordless sudo access only to this helper. The helper
 rejects operations outside the fixed diagnostic catalog and `restart_service`.
 
+Changing user data replaces the EC2 target. After applying changes that replace
+the instance, refresh the Kubernetes dev static inventory so STS has the current
+private address and SSH host key.
+
 ## Observability
 
 Terraform creates CloudWatch Logs groups, CloudWatch alarms, an SNS topic, and
@@ -67,7 +79,8 @@ at boot and ships:
 
 - `/var/log/messages` and `/var/log/cloud-init-output.log` to the system log
   group.
-- `/var/log/ddm-bootstrap.log` and `/var/log/ddm-ops.log` to the ops log group.
+- `/var/log/ddm-bootstrap.log`, `/var/log/ddm-ops.log`, and
+  `/var/log/ddm-demo-health.log` to the ops log group.
 - CPU, memory, disk, and swap metrics to the `DendenMushi/TargetHost`
   namespace.
 
@@ -81,6 +94,7 @@ CloudWatch log retention=14 days
 CPU alarm threshold=80 percent
 CPU alarm period=60 seconds
 CPU alarm evaluation periods=2
+Demo app unhealthy alarm period=60 seconds
 SQS alarm event retention=345600 seconds
 DLQ enabled=true
 ```
@@ -108,6 +122,39 @@ Alarm descriptions are JSON metadata consumed by the Incident Agent:
 
 The local `alarm_sqs_queue_url`, `alarm_sqs_queue_arn`, and
 `alarm_sns_topic_arn` outputs remain available for standalone validation.
+
+## Demo App Incident
+
+The default target host runs `ddm-demo-app` on `127.0.0.1:18080`. Its health
+endpoint returns `ok` while healthy and `unhealthy` after a demo failure is
+injected. Restarting the systemd service clears the in-memory failure state.
+
+Trigger the incident through SSM or an approved SSH session:
+
+```bash
+curl -fsS -XPOST http://127.0.0.1:18080/admin/fail
+```
+
+The health probe writes an unhealthy record to `/var/log/ddm-demo-health.log`.
+CloudWatch Logs converts that record into the `demo-app-unhealthy` metric alarm,
+which publishes managed-server metadata to the target-host SNS topic and to the
+central Incident Agent topic when `incident_alerts_topic_arn` is configured.
+
+During triage, Incident Agent gathers bounded diagnostics through the existing
+operation IDs. `ddm-ops health_check` prints the response body and returns
+nonzero for HTTP 503, so the evidence contains `unhealthy` and the fallback
+planner can propose the approved `restart_service` operation.
+
+Manual verification commands:
+
+```bash
+systemctl is-active ddm-demo-app
+curl -fsS http://127.0.0.1:18080/healthz
+curl -fsS -XPOST http://127.0.0.1:18080/admin/fail
+sudo /usr/local/sbin/ddm-ops health_check
+sudo /usr/local/sbin/ddm-ops restart_service
+sudo /usr/local/sbin/ddm-ops health_check
+```
 
 ## CPU Spike Demo
 
