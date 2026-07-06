@@ -65,7 +65,8 @@ overriding the default demo app:
 ```
 
 The SSH account has passwordless sudo access only to this helper. The helper
-rejects operations outside the fixed diagnostic catalog and `restart_service`.
+rejects operations outside the fixed diagnostic catalog and code-reviewed v1
+remediation catalog.
 
 Changing user data replaces the EC2 target. After applying changes that replace
 the instance, refresh the Kubernetes dev static inventory so STS has the current
@@ -143,7 +144,13 @@ central Incident Agent topic when `incident_alerts_topic_arn` is configured.
 During triage, Incident Agent gathers bounded diagnostics through the existing
 operation IDs. `ddm-ops health_check` prints the response body and returns
 nonzero for HTTP 503, so the evidence contains `unhealthy` and the fallback
-planner can propose the approved `restart_service` operation.
+planner can propose an approved v1 remediation operation.
+
+`ddm-ops target_probe` is a read-only readiness check for the automation target.
+It prints bounded JSON with helper readiness, host ID, configured service name,
+service active state, health URL, HTTP status, curl exit code, and a short
+health response body. It exits nonzero when the service is inactive or the
+health endpoint is unreachable or unhealthy.
 
 Manual verification commands:
 
@@ -151,7 +158,10 @@ Manual verification commands:
 systemctl is-active ddm-demo-app
 curl -fsS http://127.0.0.1:18080/healthz
 curl -fsS -XPOST http://127.0.0.1:18080/admin/fail
+sudo /usr/local/sbin/ddm-ops target_probe
 sudo /usr/local/sbin/ddm-ops health_check
+sudo /usr/local/sbin/ddm-ops recover_demo_app
+sudo /usr/local/sbin/ddm-ops reload_service
 sudo /usr/local/sbin/ddm-ops restart_service
 sudo /usr/local/sbin/ddm-ops health_check
 ```

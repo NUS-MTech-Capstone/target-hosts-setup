@@ -106,6 +106,7 @@ User=ddm-demo
 Group=ddm-demo
 WorkingDirectory=/opt/ddm-demo-app
 ExecStart=/usr/bin/python3 /opt/ddm-demo-app/server.py
+ExecReload=/usr/bin/curl --fail --silent --show-error --max-time 10 -XPOST http://127.0.0.1:18080/admin/recover
 Restart=always
 RestartSec=2
 NoNewPrivileges=true
@@ -299,6 +300,7 @@ set -euo pipefail
 source /etc/ddm-ops/config
 SERVICE_NAME=$(printf '%s' "$SERVICE_NAME_B64" | base64 -d)
 HEALTH_URL=$(printf '%s' "$HEALTH_URL_B64" | base64 -d)
+HOST_ID=$(printf '%s' "$HOST_ID_B64" | base64 -d)
 operation=$${1:-}
 
 log_operation() {
@@ -352,6 +354,67 @@ cpu_spike() {
   echo "bounded CPU spike complete"
 }
 
+health_check() {
+  tmp_body=$(mktemp)
+  status="000"
+  exit_code=0
+
+  if status=$(curl --silent --show-error --max-time 10 --output "$tmp_body" --write-out "%%{http_code}" "$HEALTH_URL"); then
+    exit_code=0
+  else
+    exit_code=$?
+  fi
+
+  cat "$tmp_body"
+  rm -f "$tmp_body"
+
+  if (( exit_code != 0 )); then
+    exit "$exit_code"
+  fi
+
+  if [[ ! "$status" =~ ^2[0-9][0-9]$ ]]; then
+    echo "health_check failed: http_status=$status" >&2
+    exit 1
+  fi
+}
+
+target_probe() {
+  tmp_body=$(mktemp)
+  status="000"
+  curl_exit=0
+  service_state="unknown"
+
+  if service_state=$(systemctl is-active "$SERVICE_NAME" 2>/dev/null); then
+    :
+  else
+    service_state=$${service_state:-inactive}
+  fi
+
+  if status=$(curl --silent --show-error --max-time 10 --output "$tmp_body" --write-out "%%{http_code}" "$HEALTH_URL"); then
+    curl_exit=0
+  else
+    curl_exit=$?
+    status="000"
+  fi
+
+  body=$(tr -d '\r\n' <"$tmp_body" | head -c 200)
+  rm -f "$tmp_body"
+
+  timestamp=$(date --iso-8601=seconds)
+  printf '{"timestamp":"%s","hostId":"%s","helperReady":true,"serviceName":"%s","serviceState":"%s","healthUrl":"%s","httpStatus":"%s","curlExitCode":%d,"healthBody":"%s"}\n' \
+    "$timestamp" "$HOST_ID" "$SERVICE_NAME" "$service_state" "$HEALTH_URL" "$status" "$curl_exit" "$body"
+
+  if [[ "$service_state" != "active" ]]; then
+    exit 1
+  fi
+  if (( curl_exit != 0 )); then
+    exit "$curl_exit"
+  fi
+  if [[ ! "$status" =~ ^2[0-9][0-9]$ ]]; then
+    exit 1
+  fi
+}
+
 log_operation
 
 case "$operation" in
@@ -377,30 +440,21 @@ case "$operation" in
     journalctl --no-pager -u "$SERVICE_NAME" -n 200 --since "-30 minutes"
     ;;
   health_check)
-    tmp_body=$(mktemp)
-    status="000"
-    exit_code=0
-
-    if status=$(curl --silent --show-error --max-time 10 --output "$tmp_body" --write-out "%%{http_code}" "$HEALTH_URL"); then
-      exit_code=0
-    else
-      exit_code=$?
-    fi
-
-    cat "$tmp_body"
-    rm -f "$tmp_body"
-
-    if (( exit_code != 0 )); then
-      exit "$exit_code"
-    fi
-
-    if [[ ! "$status" =~ ^2[0-9][0-9]$ ]]; then
-      echo "health_check failed: http_status=$status" >&2
-      exit 1
-    fi
+    health_check
+    ;;
+  target_probe)
+    target_probe
     ;;
   restart_service)
     systemctl restart "$SERVICE_NAME"
+    systemctl is-active "$SERVICE_NAME"
+    ;;
+  recover_demo_app)
+    curl --fail --silent --show-error --max-time 10 -XPOST http://127.0.0.1:18080/admin/recover
+    health_check
+    ;;
+  reload_service)
+    systemctl reload "$SERVICE_NAME"
     systemctl is-active "$SERVICE_NAME"
     ;;
   cpu_spike)
