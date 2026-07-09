@@ -60,9 +60,13 @@ overriding the default demo app:
 ```bash
 ./scripts/bootstrap.sh -auto-approve \
   -var='automation_service_name=myapp' \
-  -var='automation_health_url=http://127.0.0.1:8080/healthz' \
-  -var='incident_alerts_topic_arn=<aws-terraform incident_alerts_topic_arn>'
+  -var='automation_health_url=http://127.0.0.1:8080/healthz'
 ```
+
+By default, the target-host stack reads the central Incident Agent SNS topic
+from the main `aws-terraform` remote state. Override
+`incident_alerts_topic_arn` only when testing against a different incident
+topic.
 
 The SSH account has passwordless sudo access only to this helper. The helper
 rejects operations outside the fixed diagnostic catalog and code-reviewed v1
@@ -111,9 +115,10 @@ Tune these with Terraform variables when applying:
 ```
 
 Alarm state changes are published to the target-host SNS topic and delivered to
-the target-host SQS queue. When `incident_alerts_topic_arn` is set, the same
-ALARM/OK transitions are also published to the central DenDenMushi Incident
-Agent topic.
+the target-host SQS queue. When the main platform remote state exposes the
+central Incident Agent SNS topic, the same ALARM/OK transitions are also
+published there. The `incident_alerts_topic_arn` output shows the resolved
+central topic ARN, if one is configured.
 
 Alarm descriptions are JSON metadata consumed by the Incident Agent:
 

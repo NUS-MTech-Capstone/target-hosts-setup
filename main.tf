@@ -13,13 +13,14 @@ data "aws_ssm_parameter" "amazon_linux_2023" {
 }
 
 locals {
-  name                  = "dendenmushi-target-${var.host_id}-${var.environment}"
-  secret_name           = "dendenmushi/targets/${var.host_id}/ssh-private-key"
-  system_log_group_name = "/dendenmushi/targets/${var.environment}/${var.host_id}/system"
-  ops_log_group_name    = "/dendenmushi/targets/${var.environment}/${var.host_id}/ops"
-  metrics_namespace     = "DendenMushi/TargetHost"
-  demo_app_metric_name  = "${local.name}-demo-app-unhealthy"
-  alarm_action_arns     = var.incident_alerts_topic_arn == "" ? [aws_sns_topic.alarms.arn] : [aws_sns_topic.alarms.arn, var.incident_alerts_topic_arn]
+  name                      = "dendenmushi-target-${var.host_id}-${var.environment}"
+  secret_name               = "dendenmushi/targets/${var.host_id}/ssh-private-key"
+  system_log_group_name     = "/dendenmushi/targets/${var.environment}/${var.host_id}/system"
+  ops_log_group_name        = "/dendenmushi/targets/${var.environment}/${var.host_id}/ops"
+  metrics_namespace         = "DendenMushi/TargetHost"
+  demo_app_metric_name      = "${local.name}-demo-app-unhealthy"
+  incident_alerts_topic_arn = trimspace(var.incident_alerts_topic_arn) != "" ? trimspace(var.incident_alerts_topic_arn) : try(data.terraform_remote_state.platform.outputs.incident_alerts_topic_arn, "")
+  alarm_action_arns         = distinct(compact([aws_sns_topic.alarms.arn, local.incident_alerts_topic_arn]))
   alarm_description_base = {
     source         = "managed-server"
     hostId         = var.host_id

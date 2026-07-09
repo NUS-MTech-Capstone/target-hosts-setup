@@ -86,3 +86,8 @@ fi
 
 terraform_apply "$@"
 terraform -chdir="${ROOT_DIR}" output
+echo
+echo "NOTE: If the target instance changed, refresh:"
+echo "  kubernetes/apps/dendenmushi/overlays/dev/server-inventory.static.json"
+echo "with the new private_address, SSH host key, credential secret, and automation metadata"
+echo "before relying on STS inventory."

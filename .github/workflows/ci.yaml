@@ -1,0 +1,23 @@
+name: Terraform CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  terraform:
+    uses: NUS-MTech-Capstone/github-actions-shared/.github/workflows/terraform-ci.yaml@main
+    with:
+      terraform-version: "1.14.5"
+      tfvars-json: |
+        {
+          "target_public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFPjwofQVgJA7OJzgb0js5GqHwmAnD6W+JMm3Gry//HM terraform-ci-placeholder"
+        }
+    secrets:
+      AWS_ROLE_ARN: ${{ secrets.AWS_TERRAFORM_PLAN_ROLE_ARN }}

@@ -54,6 +54,10 @@ output "alarm_sns_topic_arn" {
   value = aws_sns_topic.alarms.arn
 }
 
+output "incident_alerts_topic_arn" {
+  value = local.incident_alerts_topic_arn
+}
+
 output "alarm_sqs_queue_arn" {
   value = aws_sqs_queue.alarm_events.arn
 }
