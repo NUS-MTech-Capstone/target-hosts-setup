@@ -76,6 +76,11 @@ Changing user data replaces the EC2 target. After applying changes that replace
 the instance, refresh the Kubernetes dev static inventory so STS has the current
 private address and SSH host key.
 
+The launch AMI is resolved from the Amazon Linux 2023 `latest` SSM parameter
+only when Terraform creates the host. Later AMI publication does not replace a
+working demo target during an ordinary plan. Upgrade the AMI through an
+explicit, reviewed host replacement and then refresh the Kubernetes inventory.
+
 ## Observability
 
 Terraform creates CloudWatch Logs groups, CloudWatch alarms, an SNS topic, and

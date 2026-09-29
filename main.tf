@@ -324,6 +324,11 @@ resource "aws_instance" "target" {
   })
   user_data_replace_on_change = true
 
+  lifecycle {
+    # The SSM "latest" parameter is mutable. AMI upgrades are deliberate host replacements.
+    ignore_changes = [ami]
+  }
+
   metadata_options {
     http_endpoint = "enabled"
     http_tokens   = "required"
