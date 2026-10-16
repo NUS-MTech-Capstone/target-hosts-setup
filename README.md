@@ -205,3 +205,39 @@ Destroying the stack also deletes the Secrets Manager secret immediately:
 ```bash
 ./scripts/destroy.sh -auto-approve
 ```
+
+## Terraform CI
+
+Every PR and main-branch push runs Terraform 1.14.5 formatting, locked backend-free
+initialization and validation. A separate OIDC job then runs a full refreshed AWS
+plan for trusted same-repository PRs and main. Manual dispatch can plan main;
+other branches and fork PRs receive validation only. The shared workflow is pinned.
+
+Configure `AWS_TERRAFORM_PLAN_ROLE_ARN` with the platform planning role and
+`TERRAFORM_TFVARS_JSON` with a JSON object containing the existing
+`target_public_key` and any non-default deployed variables. Read the canonical public-key attribute from the protected Terraform state and
+verify its algorithm/key material matches the existing EC2 key-pair metadata.
+Preserve the canonical comment/formatting too: EC2 may return equivalent text
+without its comment, which can otherwise create a false key-pair replacement
+plan. Never copy the private key or full state to GitHub.
+The planning role needs read access to this stack and the platform remote state.
+
+Plans use read-only credentials and `-lock=false`; avoid concurrent applies.
+Exit codes 0 and 2 pass and report proposed changes without applying them.
+Authentication, backend, variable and planning errors fail CI. Only sanitized
+summary artifacts are retained for 14 days; raw plans, state and variables are
+never published. This pipeline does not bootstrap or replace the target host.
+
+After AWS retirement, set repository variable
+`TERRAFORM_LIVE_PLAN_ENABLED=false` to retain validation-only CI. The job summary
+explicitly records that live planning was not performed. Keep this unset or true
+while verifying the live environment; do not use it to hide failed AWS access.
+
+Provider versions are unchanged by platform checksum maintenance. When refreshing
+checksums for the supported macOS development and Linux CI platforms, run:
+
+```bash
+terraform providers lock -platform=linux_amd64 -platform=darwin_arm64
+```
+
+Commit the reviewed lockfile; CI continues to enforce `-lockfile=readonly`.

@@ -1,10 +1,10 @@
 name: Terraform CI
 
 on:
+  workflow_dispatch:
   pull_request:
   push:
-    branches:
-      - main
+    branches: [main]
 
 permissions:
   contents: read
@@ -12,12 +12,11 @@ permissions:
 
 jobs:
   terraform:
-    uses: NUS-MTech-Capstone/github-actions-shared/.github/workflows/terraform-ci.yaml@main
+    uses: NUS-MTech-Capstone/github-actions-shared/.github/workflows/terraform-ci.yaml@5e89b72aaec29b5c1b350282d95d9ea26ce6129b
     with:
       terraform-version: "1.14.5"
-      tfvars-json: |
-        {
-          "target_public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFPjwofQVgJA7OJzgb0js5GqHwmAnD6W+JMm3Gry//HM terraform-ci-placeholder"
-        }
+      run-plan: ${{ vars.TERRAFORM_LIVE_PLAN_ENABLED != 'false' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}
+      required-variable-files: ci.secret.auto.tfvars.json
     secrets:
       AWS_ROLE_ARN: ${{ secrets.AWS_TERRAFORM_PLAN_ROLE_ARN }}
+      TFVARS_JSON: ${{ secrets.TERRAFORM_TFVARS_JSON }}
