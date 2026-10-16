@@ -230,3 +230,12 @@ After AWS retirement, set repository variable
 `TERRAFORM_LIVE_PLAN_ENABLED=false` to retain validation-only CI. The job summary
 explicitly records that live planning was not performed. Keep this unset or true
 while verifying the live environment; do not use it to hide failed AWS access.
+
+Provider versions are unchanged by platform checksum maintenance. When refreshing
+checksums for the supported macOS development and Linux CI platforms, run:
+
+```bash
+terraform providers lock -platform=linux_amd64 -platform=darwin_arm64
+```
+
+Commit the reviewed lockfile; CI continues to enforce `-lockfile=readonly`.
