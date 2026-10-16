@@ -205,3 +205,28 @@ Destroying the stack also deletes the Secrets Manager secret immediately:
 ```bash
 ./scripts/destroy.sh -auto-approve
 ```
+
+## Terraform CI
+
+Every PR and main-branch push runs Terraform 1.14.5 formatting, locked backend-free
+initialization and validation. A separate OIDC job then runs a full refreshed AWS
+plan for trusted same-repository PRs and main. Manual dispatch can plan main;
+other branches and fork PRs receive validation only. The shared workflow is pinned.
+
+Configure `AWS_TERRAFORM_PLAN_ROLE_ARN` with the platform planning role and
+`TERRAFORM_TFVARS_JSON` with a JSON object containing the existing
+`target_public_key` and any non-default deployed variables. Retrieve the public
+key from the existing EC2 key-pair metadata; never copy the private key to GitHub.
+The public key must match the deployed target, avoiding a false replacement plan.
+The planning role needs read access to this stack and the platform remote state.
+
+Plans use read-only credentials and `-lock=false`; avoid concurrent applies.
+Exit codes 0 and 2 pass and report proposed changes without applying them.
+Authentication, backend, variable and planning errors fail CI. Only sanitized
+summary artifacts are retained for 14 days; raw plans, state and variables are
+never published. This pipeline does not bootstrap or replace the target host.
+
+After AWS retirement, set repository variable
+`TERRAFORM_LIVE_PLAN_ENABLED=false` to retain validation-only CI. The job summary
+explicitly records that live planning was not performed. Keep this unset or true
+while verifying the live environment; do not use it to hide failed AWS access.
