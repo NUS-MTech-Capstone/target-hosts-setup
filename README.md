@@ -215,9 +215,11 @@ other branches and fork PRs receive validation only. The shared workflow is pinn
 
 Configure `AWS_TERRAFORM_PLAN_ROLE_ARN` with the platform planning role and
 `TERRAFORM_TFVARS_JSON` with a JSON object containing the existing
-`target_public_key` and any non-default deployed variables. Retrieve the public
-key from the existing EC2 key-pair metadata; never copy the private key to GitHub.
-The public key must match the deployed target, avoiding a false replacement plan.
+`target_public_key` and any non-default deployed variables. Read the canonical public-key attribute from the protected Terraform state and
+verify its algorithm/key material matches the existing EC2 key-pair metadata.
+Preserve the canonical comment/formatting too: EC2 may return equivalent text
+without its comment, which can otherwise create a false key-pair replacement
+plan. Never copy the private key or full state to GitHub.
 The planning role needs read access to this stack and the platform remote state.
 
 Plans use read-only credentials and `-lock=false`; avoid concurrent applies.
